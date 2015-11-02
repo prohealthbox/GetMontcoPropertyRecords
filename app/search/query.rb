@@ -218,7 +218,7 @@ module Search
       record[:sold_amount] = doc.xpath('//table[@id="Last Sale"]/tr[2]/td[2]').first.inner_text.strip.gsub(/[$,]/, '').to_i
 
       record[:alt_id] = doc.xpath('//table[@id="Parcel"]/tr[1]/td[2]').first.inner_text.strip
-      record[:land_use_code] = doc.xpath('//table[@id="Parcel"]/tr[3]/td[2]').first.inner_text.strip
+      record[:land_use_code] = begin doc.xpath('//table[@id="Parcel"]/tr[7]/td[2]').first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
       record[:land_use_description] = doc.xpath('//table[@id="Parcel"]/tr[4]/td[2]').first.inner_text.strip
       record[:lot_number] = doc.xpath('//table[@id="Parcel"]/tr[6]/td[2]').first.inner_text.strip
       record[:lot_size] = begin doc.xpath('//table[@id="Parcel"]/tr[7]/td[2]').first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
