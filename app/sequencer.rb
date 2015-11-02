@@ -18,9 +18,9 @@ class Sequencer
   end
 
   def parcels_decreasing(municipality)
-    (cnt, ids) = @parcels.find_ids(municipality, 1)
+    ids = @parcels.find_ids(municipality, 1)
 
-    return [cnt, ids[0]]
+    return [ids.length, ids[0]]
   end
 
   def save(parcels)
@@ -35,7 +35,7 @@ class Sequencer
     if cnt == 0                                           # no more to process/save
       return false                                        # exhaustive search is complete on this partial
     elsif cnt <= Search::MAX_RECORDS                      # we are done processing this partial as there are fewer than max_records results
-      (cnt, parcels) = @parcels.find(partial)
+      parcels = @parcels.find(partial)
       save(parcels)
 
       return false                                        # exhaustive search is complete on this partial
