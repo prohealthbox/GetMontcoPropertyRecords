@@ -12,15 +12,19 @@ module Search
 
   class Query
     @@authenticated = false
+    attr_reader :total_records_found
 
     def find(expression, count=MAX_RECORDS, decreasing=true)
+      # TODO: refactor total_records_found hack
+      @total_records_found = 0  # re-initialize to zero before every search
       page = results_page(expression, count, decreasing)
 
       case page.filename.downcase
-        when /^commonsearch/
-          extract_overview page
+        when /^(advanced|common)search/
+          extract_overview page, expression
         when /^datalet/
-          extract_from_profile page
+          @total_records_found = 1  # only one record found
+          extract_from_profile page, expression
         when /^errors/
           raise URLError, "Request resulted in a general error from the web server: #{page.filename}"
         else
@@ -87,7 +91,8 @@ module Search
 
     # Return search query string for specific search mode
     def query_string
-      ROOT + 'Search/commonsearch.aspx?mode=' + query_mode
+      search_type = query_mode =~ /advanced/ ? 'advanced' : 'common'
+      ROOT + "search/#{search_type}search.aspx?mode=" + query_mode
     end
 
     # One time authenticate to the system
@@ -113,6 +118,22 @@ module Search
       @@authenticated = true
     end
 
+    # get the page, checking to see if the Disclaimer page appeared
+    def get_page(query_string)
+      page = agent.get query_string
+
+      if page.uri.to_s =~ /Disclaimer\.aspx\?FromUrl/i  # website came back with disclaimer
+        # Need to reauthenticate/submit
+        @@authenticated = false
+        authenticate
+
+        # and try to get the page again
+        page = agent.get query_string
+      end
+
+      return page
+    end
+
     # click the tab, returning the page
     def activate_tab(tab_name)
       page = agent.current_page
@@ -125,17 +146,26 @@ module Search
     def results_page(query, result_limit=@result_limit, decreasing=false)
       authenticate unless @@authenticated
 
-      page = agent.get query_string
+      page = get_page query_string
       results = page.form_with(name: 'frmMain') do |f|
         f.field_with(id: query_field).value = query
         f.field_with(id: 'selPageSize').value = result_limit.to_s
         f.field_with(id: 'selSortDir').value = decreasing ? 'desc' : 'asc'
         f.field_with(id: 'SortDir').value = decreasing ? 'desc' : 'asc'
+        if query_field == 'hdCriteria'
+          f.field_with(id: 'hdSelectedQuery').value = 0
+          f.field_with(id: 'hdCriteriaTypes').value = 'N|C|N|N|C|C|C|C|C|D|N|N|N|C|N|C|C|C'
+          f.field_with(id: 'hdLastState').value = 1
+          f.field_with(id: 'hdSearchType').value = 'AdvSearch'
+          f.field_with(id: 'txtCrit').value = '10/23/2015'
+          f.field_with(id: 'txtCrit2').value = '11/05/2015'
+          f.field_with(id: 'txCriterias').value = 10
+        end
       end.submit
     end
 
     def extract_date(element, query)
-      begin Date.parse(element.xpath(query).first.inner_text.strip) rescue nil end
+      begin interpret_date(element.xpath(query).first.inner_text.strip) rescue nil end
     end
 
     def extract_number(element, query)
@@ -147,7 +177,7 @@ module Search
     end
 
     # given a mechanized page, extract the overview (list) records in an array of associative records
-    def extract_overview(page)
+    def extract_overview(page, expression)
       # convert the page into a usable format (nokogiri)
       html = page.body
       doc = Nokogiri::HTML(html)
@@ -156,13 +186,18 @@ module Search
       records = []
       column_names = {}
 
-      # total_num_records = $1.to_i if doc.xpath('//font[@color="red"]').inner_text.strip =~ /Total found: (\d+) record/
-      # total_num_records = doc.xpath('//span[@id="ml"][2]/following-sibling::b').inner_text.strip.to_i if total_num_records.nil?
+      # Save the total number of records found (in excess of 250) to report back for sequencer to work
+      if doc.xpath('//font[@color="red"]').inner_text.strip =~ /Total found: (\d+) record/
+        @total_records_found = $1.to_i
+      else
+        @total_records_found = begin doc.xpath('//span[@id="ml"]/following-sibling::b[2]').inner_text.strip.to_i rescue 0 end
+      end
 
       doc.xpath('//table[@id="searchResults"]/tr[position() != 2]').each do |tr|  # skip the second (blank) row
         record_number += 1
         column_number = 0
         record = {}
+        record[:parcel_search_term] = expression
 
         # grab each cell and place in an associated record based on the column name
         tr.xpath('td').each do |td|
@@ -174,7 +209,7 @@ module Search
           record[column_names[column_number]] =
               case column_names[column_number].downcase
                 when /date/
-                  begin Date.parse(td.inner_text.strip) rescue nil end
+                  begin interpret_date(td.inner_text.strip) rescue nil end
                 when /amount/
                   td.inner_text.strip.gsub(/[$,]/, '').to_i
                 else
@@ -189,70 +224,70 @@ module Search
     end
 
     # given a mechanized page, extract the overview (list) records in an array of associative records from the profile page
-    def extract_overview_from_profile(page)
+    def extract_overview_from_profile(page, expression)
       html = page.body
       doc = Nokogiri::HTML(html)
 
       record = Hash.new
-      record[:parcel_id] = doc.xpath('//tr[@class="DataletHeaderTop"]/td[@class="DataletHeaderTop"]').first.inner_text.strip.sub(/^PARID: /, '')
-      record[:owner_name] = doc.xpath('//tr[@class="DataletHeaderBottom"]/td[1]').first.inner_text.strip
-      record[:property_address] = doc.xpath('//tr[@class="DataletHeaderBottom"]/td[2]').first.inner_text.strip
-      record[:sales_date] = begin Date.parse(doc.xpath('//table[@id="Last Sale"]/tr[1]/td[2]').first.inner_text.strip) rescue nil end
-      record[:sales_amount] = doc.xpath('//table[@id="Last Sale"]/tr[2]/td[2]').first.inner_text.strip.gsub(/[$,]/, '').to_i
-      record[:luc] = doc.xpath('//table[@id="Parcel"]/tr[3]/td[2]').first.inner_text.strip
-      record[:altid] = doc.xpath('//table[@id="Parcel"]/tr[1]/td[2]').first.inner_text.strip
+      record[:parcel_search_term] = expression
+
+      record[:parcel_id] = extract_string(doc, '//tr[@class="DataletHeaderTop"]/td[@class="DataletHeaderTop"]').sub(/^PARID: /, '')
+      record[:owner_name] = extract_string(doc, '//tr[@class="DataletHeaderBottom"]/td[1]')
+      record[:property_address] = extract_string(doc, '//tr[@class="DataletHeaderBottom"]/td[2]')
+      record[:sales_date] = extract_date(doc, '//table[@id="Last Sale"]/tr[1]/td[2]')
+      record[:sales_amount] = extract_number(doc, '//table[@id="Last Sale"]/tr[2]/td[2]')
+      record[:luc] = extract_string(doc, '//table[@id="Parcel"]/tr[3]/td[2]')
+      record[:altid] = extract_string(doc, '//table[@id="Parcel"]/tr[1]/td[2]')
 
       return [record]
     end
 
     # given a mechanized page, extract the overview (list) records in an array of associative records from the profile page
-    def extract_from_profile(page)
+    def extract_from_profile(page, expression)
       html = page.body
       doc = Nokogiri::HTML(html)
 
       record = Hash.new
-      record[:parcel_id] = doc.xpath('//tr[@class="DataletHeaderTop"]/td[@class="DataletHeaderTop"]').first.inner_text.strip.sub(/^PARID: /, '')
-      record[:owner_name] = doc.xpath('//tr[@class="DataletHeaderBottom"]/td[1]').first.inner_text.strip
-      record[:address] = doc.xpath('//tr[@class="DataletHeaderBottom"]/td[2]').first.inner_text.strip
-      record[:sold_date] = begin Date.parse(doc.xpath('//table[@id="Last Sale"]/tr[1]/td[2]').first.inner_text.strip) rescue nil end
-      record[:sold_amount] = doc.xpath('//table[@id="Last Sale"]/tr[2]/td[2]').first.inner_text.strip.gsub(/[$,]/, '').to_i
+      record[:parcel_search_term] = expression
 
-      record[:alt_id] = doc.xpath('//table[@id="Parcel"]/tr[1]/td[2]').first.inner_text.strip
-      record[:land_use_code] = begin doc.xpath('//table[@id="Parcel"]/tr[7]/td[2]').first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
-      record[:land_use_description] = doc.xpath('//table[@id="Parcel"]/tr[4]/td[2]').first.inner_text.strip
-      record[:lot_number] = doc.xpath('//table[@id="Parcel"]/tr[6]/td[2]').first.inner_text.strip
-      record[:lot_size] = begin doc.xpath('//table[@id="Parcel"]/tr[7]/td[2]').first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
-      record[:front_feet] = begin doc.xpath('//table[@id="Parcel"]/tr[8]/td[2]').first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
-      record[:municipality] = doc.xpath('//table[@id="Parcel"]/tr[9]/td[2]').first.inner_text.strip
-      record[:school_district] = doc.xpath('//table[@id="Parcel"]/tr[10]/td[2]').first.inner_text.strip
-      record[:utilities] = doc.xpath('//table[@id="Parcel"]/tr[11]/td[2]').first.inner_text.strip
+      record[:parcel_id] = extract_string(doc, '//tr[@class="DataletHeaderTop"]/td[@class="DataletHeaderTop"]').sub(/^PARID: /, '')
+      record[:owner_name] = extract_string(doc, '//tr[@class="DataletHeaderBottom"]/td[1]')
+      record[:address] = extract_string(doc, '//tr[@class="DataletHeaderBottom"]/td[2]')
+      record[:sold_date] = extract_date(doc, '//table[@id="Last Sale"]/tr[1]/td[2]')
+      record[:sold_amount] = extract_number(doc, '//table[@id="Last Sale"]/tr[2]/td[2]')
 
-      record[:owner_name2] = doc.xpath('//table[@id="Owner"]/tr[2]/td[2]').first.inner_text.strip
-      record[:mailing_address] = doc.xpath('//table[@id="Owner"]/tr[3]/td[2]').first.inner_text.strip
-      record[:mailing_care_of] = doc.xpath('//table[@id="Owner"]/tr[4]/td[2]').first.inner_text.strip
-      record[:mailing_address2] = doc.xpath('//table[@id="Owner"]/tr[5]/td[2]').first.inner_text.strip
-      record[:mailing_address3] = doc.xpath('//table[@id="Owner"]/tr[6]/td[2]').first.inner_text.strip
+      record[:alt_id] = extract_string(doc, '//table[@id="Parcel"]/tr[1]/td[2]')
+      # TODO: Need to correct data for land_use_code as a number of them are 0 due to previous bad xpath
+      record[:land_use_code] = extract_number(doc, '//table[@id="Parcel"]/tr[3]/td[2]')
+      record[:land_use_description] = extract_string(doc, '//table[@id="Parcel"]/tr[4]/td[2]')
+      record[:lot_number] = extract_string(doc, '//table[@id="Parcel"]/tr[6]/td[2]')
+      record[:lot_size] = extract_number(doc, '//table[@id="Parcel"]/tr[7]/td[2]')
+      record[:front_feet] = extract_number(doc, '//table[@id="Parcel"]/tr[8]/td[2]')
+      record[:municipality] = extract_string(doc, '//table[@id="Parcel"]/tr[9]/td[2]')
+      record[:school_district] = extract_string(doc, '//table[@id="Parcel"]/tr[10]/td[2]')
+      record[:utilities] = extract_string(doc, '//table[@id="Parcel"]/tr[11]/td[2]')
 
-      record[:appraised_value] = begin doc.xpath('//table[@id="Current Assessment"]//tr[2]/td[1]').first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
-      record[:assessed_value] = begin doc.xpath('//table[@id="Current Assessment"]//tr[2]/td[2]').first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
-      record[:restrict_code] = begin doc.xpath('//table[@id="Current Assessment"]//tr[2]/td[3]').first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
+      record[:owner_name2] = extract_string(doc, '//table[@id="Owner"]/tr[2]/td[2]')
+      record[:mailing_address] = extract_string(doc, '//table[@id="Owner"]/tr[3]/td[2]')
+      record[:mailing_care_of] = extract_string(doc, '//table[@id="Owner"]/tr[4]/td[2]')
+      record[:mailing_address2] = extract_string(doc, '//table[@id="Owner"]/tr[5]/td[2]')
+      record[:mailing_address3] = extract_string(doc, '//table[@id="Owner"]/tr[6]/td[2]')
 
-      record[:county_tax] = begin doc.xpath('//table[@id="Estimated Taxes"]//tr[1]/td[2]').first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
-      record[:municipality_tax] = begin doc.xpath('//table[@id="Estimated Taxes"]//tr[2]/td[2]').first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
-      record[:school_district_tax] = begin doc.xpath('//table[@id="Estimated Taxes"]//tr[3]/td[2]').first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
-      record[:estimated_taxes] = begin doc.xpath('//table[@id="Estimated Taxes"]//tr[4]/td[2]').first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
-      tax_lien = doc.xpath('//table[@id="Estimated Taxes"]//tr[5]/td[2]').first.inner_text.strip.gsub(/[^0-9]/, '')
-      if tax_lien.downcase == 'no'
-        record[:tax_lien] = 0
-      else
-        record[:tax_lien] = begin total.to_i rescue 0 end
-      end
+      record[:appraised_value] = extract_number(doc, '//table[@id="Current Assessment"]//tr[2]/td[1]')
+      record[:assessed_value] = extract_number(doc, '//table[@id="Current Assessment"]//tr[2]/td[2]')
+      record[:restrict_code] = extract_number(doc, '//table[@id="Current Assessment"]//tr[2]/td[3]')
 
-      record[:tax_stamps] = begin doc.xpath('//table[@id="Last Sale"]//tr[3]/td[2]').first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
-      record[:deed_book_and_page] = doc.xpath('//table[@id="Last Sale"]//tr[4]/td[2]').first.inner_text.strip
-      record[:grantor] = doc.xpath('//table[@id="Last Sale"]//tr[5]/td[2]').first.inner_text.strip
-      record[:grantee] = doc.xpath('//table[@id="Last Sale"]//tr[6]/td[2]').first.inner_text.strip
-      record[:date_sale_recorded] = begin Date.parse(doc.xpath('//table[@id="Last Sale"]//tr[7]/td[2]').first.inner_text.strip) rescue nil end
+      record[:county_tax] = extract_number(doc, '//table[@id="Estimated Taxes"]//tr[1]/td[2]')
+      record[:municipality_tax] = extract_number(doc, '//table[@id="Estimated Taxes"]//tr[2]/td[2]')
+      record[:school_district_tax] = extract_number(doc, '//table[@id="Estimated Taxes"]//tr[3]/td[2]')
+      record[:estimated_taxes] = extract_number(doc, '//table[@id="Estimated Taxes"]//tr[4]/td[2]')
+      record[:tax_lien] = extract_string(doc, '//table[@id="Estimated Taxes"]//tr[5]/td[2]')
+
+      record[:tax_stamps] = extract_number(doc, '//table[@id="Last Sale"]//tr[3]/td[2]')
+      record[:deed_book_and_page] = extract_string(doc, '//table[@id="Last Sale"]//tr[4]/td[2]')
+      record[:grantor] = extract_string(doc, '//table[@id="Last Sale"]//tr[5]/td[2]')
+      record[:grantee] = extract_string(doc, '//table[@id="Last Sale"]//tr[6]/td[2]')
+      record[:date_sale_recorded] = extract_date(doc, '//table[@id="Last Sale"]//tr[7]/td[2]')
 
       return [record]
     end
@@ -264,7 +299,7 @@ module Search
       lineno = 0
 
       # ignore the last empty row on the table ([0..-2])
-      doc.xpath('//table[@id="Assessment History"]//tr[position() > 1]')[0..-2].each do |tr|
+      doc.xpath('//table[@id="Assessment History"]//tr[td[@class="DataletData"]]').each do |tr|
         record = Hash.new
         lineno += 1
 
@@ -288,7 +323,7 @@ module Search
       doc = Nokogiri::HTML(html)
       records = []
       lineno = 0
-      doc.xpath('//table[@id="Sales History"]//tr[position() > 1]').each do |tr|
+      doc.xpath('//table[@id="Sales History"]//tr[td[@class="DataletData"]]').each do |tr|
         record = Hash.new
         lineno += 1
 
@@ -312,7 +347,8 @@ module Search
       html = page.body
       doc = Nokogiri::HTML(html)
 
-      #return [] if doc.xpath('//td/b[text()="-- No Data --"]')
+      return [] unless extract_string(doc, '//td/b[text()="-- No Data --"]').nil?
+
       record = {}
 
       record[:parcel_id] = parcel_id

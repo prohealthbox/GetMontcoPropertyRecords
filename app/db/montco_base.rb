@@ -31,14 +31,15 @@ module DB
       records.each { |record|
         statement.execute(*(record.values))
       }
-      puts "saved #{records.length} #{@table}; " + 'parcel'.pluralize(records.length) + ': [' + records.map { |rec| rec[:parcel_id] }.join(', ') + ']'
+      parcels = records.map { |rec| rec[:parcel_id] }.uniq
+      puts "saved #{records.length} #{@table}; " + 'parcel'.pluralize(parcels.length) + ': ' + parcels.join(', ')
     end
 
     # return a list of parcel ids for those records that still need the details updated
-    def records_to_complete(limit = 1000)
-      return nil if limit <= 0
+    def records_to_complete(limit = nil)
+      sql = @records_to_complete_sql.strip
+      sql += " LIMIT 0, #{limit};" unless limit.nil?
 
-      sql = @records_to_complete_sql + " LIMIT 0, #{limit};"
       DB.client.query(sql, symbolize_keys: true).map { |row| ('0' + row[:parcel_id].to_s)[-12..-1] }
     end
 

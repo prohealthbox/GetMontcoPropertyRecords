@@ -1,26 +1,50 @@
 require_relative 'search/parcel/query'
 require_relative 'db/property'
+require_relative 'db/update_history'
 
 #
 # First sequence starts with 01
 # Last sequence starts with 67
 #
 class Sequencer
+
+  class << self
+    def invoke
+      seq = Sequencer.new
+
+      expressions = Options.parcel_expressions || []
+
+      seq.municipalities do |municipality|
+        expressions << municipality
+      end if expressions.empty?
+
+      # Sequence through all municipalities and walk through the parcels in each
+      start_id = DB::UpdateHistory.mark('sequencer_start')
+
+      expressions.each do |expr|
+        puts "Sequencing through parcels beginning with #{expr}" if Options.verbose
+        seq.query expr
+      end
+
+      DB::UpdateHistory.mark('sequencer_complete', start_id)
+    end
+  end
+
   def initialize
     @parcels = Parcel::Query.new
     @properties = DB::Property.new
   end
 
   def municipalities
-    ('01'..'67').each do |s|
-      yield s
+    (Options.first_municipality..Options.last_municipality).each do |s|
+      yield ('0' + s.to_s)[-2..-1]
     end
   end
 
-  def parcels_decreasing(municipality)
-    ids = @parcels.find_ids(municipality, 1)
+  def parcels_decreasing(partial)
+    ids = @parcels.find_ids(partial, 1)
 
-    return [ids.length, ids[0]]
+    return [@parcels.total_records_found, ids[0]]
   end
 
   def save(parcels)
@@ -50,10 +74,4 @@ class Sequencer
     return false
   end
 
-end
-
-# Sequence through all municipalities and walk through the parcels in each
-seq = Sequencer.new
-seq.municipalities do |municipality|
-  seq.query(municipality)
 end
