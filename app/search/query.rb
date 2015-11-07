@@ -257,7 +257,6 @@ module Search
       record[:sold_amount] = extract_number(doc, '//table[@id="Last Sale"]/tr[2]/td[2]')
 
       record[:alt_id] = extract_string(doc, '//table[@id="Parcel"]/tr[1]/td[2]')
-      # TODO: Need to correct data for land_use_code as a number of them are 0 due to previous bad xpath
       record[:land_use_code] = extract_number(doc, '//table[@id="Parcel"]/tr[3]/td[2]')
       record[:land_use_description] = extract_string(doc, '//table[@id="Parcel"]/tr[4]/td[2]')
       record[:lot_number] = extract_string(doc, '//table[@id="Parcel"]/tr[6]/td[2]')
