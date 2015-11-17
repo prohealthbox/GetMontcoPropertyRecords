@@ -165,15 +165,15 @@ module Search
     end
 
     def extract_date(element, query)
-      begin interpret_date(element.xpath(query).first.inner_text.strip) rescue nil end
+      begin interpret_date(element.xpath(query).first.inner_text.gsub(/\u00a0/, ' ').strip) rescue nil end
     end
 
     def extract_number(element, query)
-      begin element.xpath(query).first.inner_text.strip.gsub(/[^0-9]/, '').to_i rescue 0 end
+      begin element.xpath(query).first.inner_text.strip.gsub(/[^0-9.]/, '').to_i rescue 0 end
     end
 
     def extract_string(element, query)
-      begin element.xpath(query).first.inner_text.strip rescue nil end
+      begin element.xpath(query).first.inner_text.gsub(/\u00a0/, ' ').strip rescue nil end
     end
 
     # given a mechanized page, extract the overview (list) records in an array of associative records
@@ -260,7 +260,8 @@ module Search
       record[:land_use_code] = extract_number(doc, '//table[@id="Parcel"]/tr[3]/td[2]')
       record[:land_use_description] = extract_string(doc, '//table[@id="Parcel"]/tr[4]/td[2]')
       record[:lot_number] = extract_string(doc, '//table[@id="Parcel"]/tr[6]/td[2]')
-      record[:lot_size] = extract_number(doc, '//table[@id="Parcel"]/tr[7]/td[2]')
+
+      record[:lot_size] = extract_string(doc, '//table[@id="Parcel"]/tr[7]/td[2]')
       record[:front_feet] = extract_number(doc, '//table[@id="Parcel"]/tr[8]/td[2]')
       record[:municipality] = extract_string(doc, '//table[@id="Parcel"]/tr[9]/td[2]')
       record[:school_district] = extract_string(doc, '//table[@id="Parcel"]/tr[10]/td[2]')
